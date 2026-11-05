@@ -22,9 +22,11 @@ on:
   # merged. The build job always runs instead, and its steps are skipped by
   # condition when the detect-changes action says nothing needs building.
   pull_request:
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - 'main'
+      - 'master'
       - 'develop'
       - 'release/*'
       - 'support/*'
@@ -91,3 +93,47 @@ jobs:
             **/surefire-reports/TEST-*.xml
             **/failsafe-reports/TEST-*.xml
 
+  # SonarQube Cloud analysis. Runs in parallel with `build` and is NOT part of
+  # the required checks, so a Sonar problem never blocks merging.
+  sonar:
+    name: SonarQube Cloud Analysis
+    runs-on: ubuntu-latest
+    # Secrets are not available to PRs from forks; skip those instead of failing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history needed for accurate blame / new-code detection
+
+      - name: Detect changes
+        id: changes
+        uses: ./.github/actions/detect-changes
+
+      - name: Set up JDK 21
+        if: steps.changes.outputs.code == 'true' && env.SONAR_TOKEN != ''
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Cache SonarQube packages
+        if: steps.changes.outputs.code == 'true' && env.SONAR_TOKEN != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: |
+            ${{ runner.os }}-sonar
+
+      - name: Build and analyze
+        if: steps.changes.outputs.code == 'true' && env.SONAR_TOKEN != ''
+        run: |
+          mvn -B -DskipTests -DskipAssembly --no-transfer-progress verify \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+            -Dsonar.projectKey=Sambit-rgb_Java-struts \
+            -Dsonar.organization=sambit-rgb \
+            -Dsonar.host.url=https://sonarcloud.io
